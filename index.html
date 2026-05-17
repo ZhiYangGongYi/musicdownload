@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta name="referrer" content="no-referrer">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>网易云下载器</title>
     <style>
@@ -1409,13 +1410,13 @@
         loginBtn.addEventListener('click', openQrLogin);
 
         async function fetchUrl(id) {
-            let url = `${API}/song/url/v1?id=${encodeURIComponent(id)}&level=${LEVEL}`;
+            let url = `${API}/song/url/v1?id=${encodeURIComponent(id)}&level=${LEVEL}&timestamp=${Date.now()}`;
             if (currentCookie) {
                 url += `&cookie=${encodeURIComponent(currentCookie)}`;
             } else {
                 url += `&unblock=${UNBLOCK}`;
             }
-            const resp = await fetch(url, { signal: abortCtrl?.signal });
+            const resp = await fetch(url, { signal: abortCtrl?.signal, referrerPolicy: 'no-referrer' });
             if (!resp.ok) throw new Error('API请求失败');
             const json = await resp.json();
             let musicUrl = null;
@@ -1434,8 +1435,27 @@
             return musicUrl;
         }
 
+        async function fetchSongDetails(ids) {
+            const url = `${API}/song/detail?ids=${encodeURIComponent(ids.join(','))}&timestamp=${Date.now()}`;
+            const resp = await fetch(url, { signal: abortCtrl?.signal, referrerPolicy: 'no-referrer' });
+            if (!resp.ok) throw new Error('获取歌曲详情失败');
+            const json = await resp.json();
+            const map = {};
+            if (json?.songs && Array.isArray(json.songs)) {
+                json.songs.forEach(song => {
+                    const rawName = song.name || String(song.id);
+                    const safeName = rawName.replace(/[\\/:*?"<>|]/g, '_').trim() || String(song.id);
+                    map[String(song.id)] = safeName;
+                });
+            }
+            ids.forEach(id => {
+                if (!map[id]) map[id] = id;
+            });
+            return map;
+        }
+
         async function dlBlob(url, filename, onProg) {
-            const resp = await fetch(url, { signal: abortCtrl?.signal });
+            const resp = await fetch(url, { signal: abortCtrl?.signal, referrerPolicy: 'no-referrer' });
             if (!resp.ok) throw new Error('文件请求失败');
             const total = resp.headers.get('content-length') ? parseInt(resp.headers.get('content-length'), 10) : null;
             let received = 0;
@@ -1459,25 +1479,26 @@
             setTimeout(() => URL.revokeObjectURL(blobUrl), 3000);
         }
 
-        async function dlDirect(url, filename) {
+        function dlDirect(url, filename) {
             const a = document.createElement('a');
             a.href = url;
             a.download = filename;
             a.target = '_blank';
             a.rel = 'noopener noreferrer';
+            a.referrerPolicy = 'no-referrer';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
         }
 
-        async function processOne(id) {
+        async function processOne(id, songMap) {
             const url = await fetchUrl(id);
-            const filename = id + '.mp3';
+            const filename = (songMap?.[id] || id) + '.mp3';
             try {
                 await dlBlob(url, filename, pct => setProg(pct, `下载中: ${filename}`));
             } catch (e) {
                 if (e.name === 'AbortError') throw e;
-                await dlDirect(url, filename);
+                dlDirect(url, filename);
                 setProg(100, `已触发: ${filename}`);
             }
         }
@@ -1510,16 +1531,22 @@
             btn.classList.add('loading');
             resetProg();
             setCap('active', ids.length === 1 ? '获取中...' : `共 ${ids.length} 首`);
-            setProg(0, '获取URL...');
+            setProg(0, '获取歌曲信息...');
 
             let ok = 0, fail = 0;
+            let songMap = {};
+            try {
+                songMap = await fetchSongDetails(ids);
+            } catch (e) {
+                console.error('获取歌曲详情失败:', e);
+            }
             for (let i = 0; i < ids.length; i++) {
                 const id = ids[i];
-                const filename = id + '.mp3';
+                const filename = (songMap[id] || id) + '.mp3';
                 const base = ids.length > 1 ? Math.round((i / ids.length) * 100) : 0;
                 setProg(base, `[${i+1}/${ids.length}] 获取 ${filename}`);
                 try {
-                    await processOne(id);
+                    await processOne(id, songMap);
                     ok++;
                     addQueue(id, 'done', `${filename} — 完成`);
                     if (ids.length > 1) setProg(Math.round(((i+1)/ids.length)*100), `[${i+1}/${ids.length}] 完成`);
